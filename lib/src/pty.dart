@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:pty/pty.dart';
 import 'package:pty/src/pty_core.dart';
@@ -21,8 +22,7 @@ abstract class BasePseudoTerminal implements PseudoTerminal {
   // }
 
   @override
-  void write(String input) {
-    final data = utf8.encode(input);
+  void write(Uint8List data) {
     _core.write(data);
   }
 
@@ -40,7 +40,7 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
   }
 
   final _exitCode = Completer<int>();
-  final _out = StreamController<String>();
+  final _out = StreamController<Uint8List>();
 
   void _poll(Timer timer) {
     final exit = _core.exitCodeNonBlocking();
@@ -51,18 +51,20 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
       return;
     }
 
-    final buffer = StringBuffer();
+    final buffer = List<Uint8List>.empty(growable: true);
 
     var data = _core.read();
     while (data != null) {
       // TODO: handle Unhandled Exception: FormatException: Unfinished UTF-8
       // octet sequence (at offset 1024)
-      buffer.write(utf8.decode(data));
+      buffer.add(data);
       data = _core.read();
     }
 
     if (buffer.isNotEmpty) {
-      _out.add(buffer.toString());
+      buffer.forEach((element) {
+        _out.add(element);
+      });
     }
   }
 
@@ -72,7 +74,7 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
   }
 
   @override
-  Stream<String> get out {
+  Stream<Uint8List> get out {
     return _out.stream;
   }
 }
@@ -97,7 +99,7 @@ class BlockingPseudoTerminal extends BasePseudoTerminal {
   }
 
   @override
-  late Stream<String> out;
+  late Stream<Uint8List> out;
 }
 
 /// Argument to a isolate entry point, with a sendPort and a custom value.

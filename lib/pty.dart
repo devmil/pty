@@ -1,6 +1,7 @@
 library pty;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:pty/src/impl/unix.dart';
 import 'package:pty/src/impl/windows.dart';
@@ -62,9 +63,9 @@ abstract class PseudoTerminal {
   //   return _core.pid;
   // }
 
-  void write(String input);
+  void write(Uint8List input);
 
-  Stream<String> get out;
+  Stream<Uint8List> get out;
 
   void resize(int width, int height);
 }
