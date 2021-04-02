@@ -124,7 +124,6 @@ void _readUntilExit(_IsolateArgs<PtyCore> ctx) async {
       break;
     }
 
-    final str = utf8.decode(data);
-    ctx.sendPort.send(str);
+    ctx.sendPort.send(data);
   }
 }
