@@ -51,20 +51,16 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
       return;
     }
 
-    final buffer = List<Uint8List>.empty(growable: true);
+    final buffer = List<int>.empty(growable: true);
 
     var data = _core.read();
     while (data != null) {
-      // TODO: handle Unhandled Exception: FormatException: Unfinished UTF-8
-      // octet sequence (at offset 1024)
-      buffer.add(data);
+      buffer.addAll(data);
       data = _core.read();
     }
 
     if (buffer.isNotEmpty) {
-      buffer.forEach((element) {
-        _out.add(element);
-      });
+      _out.add(Uint8List.fromList(buffer));
     }
   }
 
