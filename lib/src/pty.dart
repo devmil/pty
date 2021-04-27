@@ -77,7 +77,7 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
         final strContent = utf8.decode(_rawDataBuffer);
         _rawDataBuffer.clear();
         _out.add(strContent);
-      } on FormatException catch (ex) {
+      } on FormatException catch (_) {
         // FormatException is thrown when the data contains incomplete
         // UTF-8 byte sequences.
         // int this case we do nothing and wait for the next chunk of data
@@ -102,6 +102,9 @@ class PollingPseudoTerminal extends BasePseudoTerminal {
   }
 }
 
+enum BlockingPseudoTerminalEvent { data, exitCode }
+enum BlockingPseudoTerminalCommand { port, ack }
+
 /// An isolate based PseudoTerminal implementation. Performs better than
 /// PollingPseudoTerminal and requires less resource. However this prevents
 /// flutter hot reload from working. Ideal for release builds. The underlying
@@ -110,36 +113,38 @@ class BlockingPseudoTerminal extends BasePseudoTerminal {
   BlockingPseudoTerminal(PtyCore _core, this._syncProcessed) : super(_core);
 
   late SendPort _sendPort;
+  late Completer<int> _exitCodeCompleter;
   final bool _syncProcessed;
   late final StreamController<String> _outStreamController;
 
   @override
-  void init() {
+  void init() async {
     _outStreamController = StreamController<String>();
     out = _outStreamController.stream;
+    _exitCodeCompleter = Completer<int>();
 
     final receivePort = ReceivePort();
-    var first = true;
     receivePort.listen((msg) {
-      if (first) {
-        _sendPort = msg;
-      } else {
-        _outStreamController.sink.add(msg);
+      BlockingPseudoTerminalEvent evt = msg[0];
+      switch (evt) {
+        case BlockingPseudoTerminalEvent.data:
+          _outStreamController.sink.add(msg[1]);
+          break;
+        case BlockingPseudoTerminalEvent.exitCode:
+          _exitCodeCompleter.complete(msg[1]);
+          break;
       }
-      first = false;
     });
+    final firstReceivePort = ReceivePort();
     Isolate.spawn(_readUntilExit,
-        _IsolateArgs(receivePort.sendPort, _core, _syncProcessed));
+        _IsolateArgs(firstReceivePort.sendPort, _core, _syncProcessed));
+
+    _sendPort = await firstReceivePort.first;
+    _sendPort.send([BlockingPseudoTerminalCommand.port, receivePort.sendPort]);
   }
 
   @override
-  Future<int> get exitCode async {
-    final receivePort = ReceivePort();
-    // ignore: unawaited_futures
-    Isolate.spawn(_waitForExitCode,
-        _IsolateArgs(receivePort.sendPort, _core, _syncProcessed));
-    return (await receivePort.first) as int;
-  }
+  Future<int> get exitCode => _exitCodeCompleter.future;
 
   @override
   late Stream<String> out;
@@ -147,7 +152,7 @@ class BlockingPseudoTerminal extends BasePseudoTerminal {
   @override
   void ackProcessed() {
     if (_syncProcessed) {
-      _sendPort.send(true);
+      _sendPort.send([BlockingPseudoTerminalCommand.ack]);
     }
   }
 }
@@ -163,34 +168,42 @@ class _IsolateArgs<T> {
   final bool syncProcessed;
 }
 
-void _waitForExitCode(_IsolateArgs<PtyCore> ctx) async {
-  final exitCode = ctx.arg.exitCodeBlocking();
-  ctx.sendPort.send(exitCode);
-}
-
 void _readUntilExit(_IsolateArgs<PtyCore> ctx) async {
   final rp = ReceivePort();
-  ctx.sendPort.send(rp.sendPort);
+  var port = ctx.sendPort;
+  port.send(rp.sendPort);
+
+  final loopController = StreamController<bool>();
+
+  rp.listen((message) {
+    BlockingPseudoTerminalCommand cmd = message[0];
+    switch (cmd) {
+      case BlockingPseudoTerminalCommand.port:
+        port = message[1];
+        loopController.sink.add(true); //enable the first iteration
+        break;
+      case BlockingPseudoTerminalCommand.ack:
+        if (ctx.syncProcessed) {
+          loopController.sink.add(true);
+        }
+        break;
+    }
+  });
 
   // set [sync] to true because PtyCore.read() is blocking and prevents the
   // event loop from working.
   final input = StreamController<List<int>>(sync: true);
 
-  input.stream.transform(utf8.decoder).listen(ctx.sendPort.send);
-
-  final loopController = StreamController<bool>();
-
-  if (ctx.syncProcessed) {
-    rp.listen((message) {
-      loopController.sink.add(message);
-    });
-  }
-  loopController.sink.add(true); //enable the first iteration
+  input.stream.transform(utf8.decoder).listen((event) {
+    port.send([BlockingPseudoTerminalEvent.data, event]);
+  });
 
   await for (final _ in loopController.stream) {
     final data = ctx.arg.read();
 
     if (data == null) {
+      port.send(
+          [BlockingPseudoTerminalEvent.exitCode, ctx.arg.exitCodeBlocking()]);
       await input.close();
       break;
     }
